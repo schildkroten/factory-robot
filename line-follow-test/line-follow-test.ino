@@ -1,21 +1,72 @@
-#define IN1 20
-#define IN2 10
-#define IN3 7
-#define IN4 6
-#define MTRSPD_A 21
-#define MTRSPD_B 5
+// S3 mac address - 94:a9:90:dd:94:24
+// C mac address - f4:65:0b:47:19:ec
 
-#define IR1 4
-#define IR2 3
-#define IR3 2
-#define IR4 1
-#define IR5 0
+#include <esp_now.h>
+#include <WiFi.h>
 
-#define BASE_SPD 96
-#define TURN_SPD 70
+#define IN1 2
+#define IN2 38
+#define IN3 48
+#define IN4 47
+#define MTRSPD_A 1
+#define MTRSPD_B 21
+
+#define IR1 14
+#define IR2 13
+#define IR3 12
+#define IR4 11
+#define IR5 10
+
+typedef struct {
+  int power;
+  float Kp;
+  float Ki;
+  float Kd;
+  float weight_low;
+  float weight_high;
+  unsigned int min_spd;
+  unsigned int base_spd;
+  unsigned int max_spd;
+  unsigned int icap;
+} dataPacket;
+
+dataPacket packet = {
+  0,
+  1,
+  0,
+  0,
+  1,
+  2,
+  0,
+  512,
+  1023,
+  200
+};
+
+void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
+  memcpy(&packet, incomingData, sizeof(dataPacket));
+}
+
+float readSensors() {
+  int ir1 = !digitalRead(IR1);
+  int ir2 = !digitalRead(IR2);
+  int ir4 = !digitalRead(IR4);
+  int ir5 = !digitalRead(IR5);
+
+  return (-packet.weight_high * ir1) + (-packet.weight_low * ir2) + (packet.weight_low * ir4) + (packet.weight_high * ir5);
+}
 
 void setup() {
   Serial.begin(115200);
+
+  WiFi.mode(WIFI_STA);
+
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("Error initializing ESP-NOW");
+    return;
+  }
+  
+  esp_now_register_recv_cb(esp_now_recv_cb_t(OnDataRecv));
 
   pinMode(IN1, OUTPUT);
   pinMode(IN2, OUTPUT);
@@ -31,11 +82,11 @@ void setup() {
   pinMode(MTRSPD_A, OUTPUT);
   pinMode(MTRSPD_B, OUTPUT);
 
-  ledcAttach(MTRSPD_A, 5000, 8);
-  ledcAttach(MTRSPD_B, 5000, 8);
+  ledcAttach(MTRSPD_A, 20000, 10);
+  ledcAttach(MTRSPD_B, 20000, 10);
 
-  ledcWrite(MTRSPD_A, BASE_SPD);
-  ledcWrite(MTRSPD_B, BASE_SPD);
+  ledcWrite(MTRSPD_A, packet.base_spd);
+  ledcWrite(MTRSPD_B, packet.base_spd);
 
   pinMode(IR1, INPUT);
   pinMode(IR2, INPUT);
@@ -44,32 +95,38 @@ void setup() {
   pinMode(IR5, INPUT);
 }
 
-void stop() {
-  digitalWrite(IN1, HIGH);
-  digitalWrite(IN2, HIGH);
+//josiah waz here
 
-  digitalWrite(IN3, HIGH);
-  digitalWrite(IN4, HIGH);
-}
+float integral = 0;
+float last_error = 0;
 
-void forward(uint time) {
-  ledcWrite(MTRSPD_A, BASE_SPD);
-  ledcWrite(MTRSPD_B, BASE_SPD);
+int last_power = 0;
 
-  digitalWrite(IN1, LOW);
-  digitalWrite(IN2, HIGH);
+void loop() {
+  if (packet.power && !last_power) {
+    digitalWrite(IN1, HIGH);
+    digitalWrite(IN2, LOW);
 
-  digitalWrite(IN3, LOW);
-  digitalWrite(IN4, HIGH);
+    digitalWrite(IN3, HIGH);
+    digitalWrite(IN4, LOW);
 
-  delay(time);
+    ledcWrite(MTRSPD_A, 700);
+    ledcWrite(MTRSPD_B, 700);
 
-  stop();
-}
+    last_power = 1;
 
-void backward(uint time) {
-  ledcWrite(MTRSPD_A, BASE_SPD);
-  ledcWrite(MTRSPD_B, BASE_SPD);
+    delay(100);
+  } else if (!packet.power) {
+    digitalWrite(IN1, HIGH);
+    digitalWrite(IN2, HIGH);
+
+    digitalWrite(IN3, HIGH);
+    digitalWrite(IN4, HIGH);
+
+    last_power = 0;
+
+    return;
+  }
 
   digitalWrite(IN1, HIGH);
   digitalWrite(IN2, LOW);
@@ -77,47 +134,22 @@ void backward(uint time) {
   digitalWrite(IN3, HIGH);
   digitalWrite(IN4, LOW);
 
-  delay(time);
+  float error = readSensors();
 
-  stop();
-}
+  integral = constrain(integral + error, -packet.icap, packet.icap);
 
-void leftTurn(uint time) {
-  ledcWrite(MTRSPD_A, BASE_SPD);
-  ledcWrite(MTRSPD_B, TURN_SPD);
+  float derivitive = error - last_error;
 
-  digitalWrite(IN1, LOW);
-  digitalWrite(IN2, HIGH);
+  int correction = (packet.Kp * error) + (packet.Ki * integral) + (packet.Kd * derivitive);
 
-  digitalWrite(IN3, LOW);
-  digitalWrite(IN4, HIGH);
+  last_error = error;
 
-  delay(time);
+  ledcWrite(MTRSPD_A, constrain(packet.base_spd - correction, packet.min_spd, packet.max_spd));
+  ledcWrite(MTRSPD_B, constrain(packet.base_spd + correction, packet.min_spd, packet.max_spd));
 
-  stop();
-}
-
-void rightTurn(uint time) {
-  ledcWrite(MTRSPD_A, TURN_SPD);
-  ledcWrite(MTRSPD_B, BASE_SPD);
-
-  digitalWrite(IN1, LOW);
-  digitalWrite(IN2, HIGH);
-
-  digitalWrite(IN3, LOW);
-  digitalWrite(IN4, HIGH);
-
-  delay(time);
-
-  stop();
-}
-
-void loop() {
-  if (digitalRead(IR4) == LOW) {
-    rightTurn(100);
-  } else if (digitalRead(IR2) == LOW) {
-    leftTurn(100);
+  if (error == -packet.weight_high - packet.weight_low) {
+    ledcWrite(MTRSPD_B, 0);
+  } else if (error == packet.weight_high + packet.weight_low) {
+    ledcWrite(MTRSPD_A, 0);
   }
-
-  forward(25);
 }
