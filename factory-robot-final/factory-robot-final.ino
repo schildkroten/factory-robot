@@ -15,8 +15,8 @@
 
 #define PACKAGE_SENSOR 1
 
-#define TRIG 18
-#define ECHO 17
+#define TRIG 7
+#define ECHO 6
 
 #define KP 30
 #define KD 150
@@ -34,6 +34,7 @@ Adafruit_NeoPixel pixels(1, 38, NEO_GRB + NEO_KHZ800);
 bool go = true;
 bool last_go = false;
 
+int last_millis = millis();
 float duration = 0;
 float distance = 0;
 
@@ -62,8 +63,8 @@ void setup() {
 
   pinMode(PACKAGE_SENSOR, INPUT);
 
-  // pinMode(TRIG, OUTPUT);
-  // pinMode(ECHO, INPUT);
+  pinMode(TRIG, OUTPUT);
+  pinMode(ECHO, INPUT);
 
   pinMode(IN1, OUTPUT);
   pinMode(IN2, OUTPUT);
@@ -84,41 +85,42 @@ void setup() {
 }
 
 void loop() {
+  go = true;
+
   pixels.clear();
 
   int package_sensor_value = analogRead(PACKAGE_SENSOR);
-  Serial.println(package_sensor_value);
+  // Serial.println(package_sensor_value);
 
   if (package_sensor_value <= package_sensor_threshold) {
-    pixels.setPixelColor(0, pixels.Color(0, 255, 0));
-    pixels.show();
-    
-    go = true;
-
     package_sensor_threshold = 500;
   } else {
-    pixels.setPixelColor(0, pixels.Color(255, 0, 0));
-    pixels.show();
-
-    go = false;
+    go = true;
 
     package_sensor_threshold = 300;
   }
 
-  // digitalWrite(TRIG, LOW);
-  // delayMicroseconds(2);
-  // digitalWrite(TRIG, HIGH);
-  // delayMicroseconds(10);
-  // digitalWrite(TRIG, LOW);
+  if (millis() - last_millis >= 100) {
+    digitalWrite(TRIG, LOW);
+    delayMicroseconds(2);
+    digitalWrite(TRIG, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(TRIG, LOW);
 
-  // duration = pulseIn(ECHO, HIGH);
-  // distance = (duration * 0.0343) / 2;
+    duration = pulseIn(ECHO, HIGH);
+    distance = (duration * 0.0343) / 2;
 
-  // Serial.println(distance);
+    Serial.println(distance);
 
-  // go = distance < 15 ? false : true;
+    if (distance <= 15) { go = false; }
+
+    last_millis = millis();
+  }
 
   if (go && !last_go) {
+    pixels.setPixelColor(0, pixels.Color(0, 255, 0));
+    pixels.show();
+
     delay(1000);
 
     digitalWrite(IN1, HIGH);
@@ -134,6 +136,9 @@ void loop() {
 
     last_go = true;
   } else if (!go) {
+    pixels.setPixelColor(0, pixels.Color(255, 0, 0));
+    pixels.show();
+
     digitalWrite(IN1, LOW);
     digitalWrite(IN2, LOW);
 
